@@ -15,9 +15,9 @@ use mlua::{UserData, UserDataMethods};
 #[derive(Debug, Clone, Default)]
 pub struct Effect {
     id: String,
-    windows_tag: WindowsTag,
-    condition: Condition,
-    do_effect: DoEffect,
+    pub windows_tag: WindowsTag,
+    pub condition: Condition,
+    pub do_effect: DoEffect,
     // TODO 这里要处理一下选择的问题
 }
 
@@ -80,7 +80,7 @@ impl UserData for EffectBuilder {
 }
 
 /// 窗口标签
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum WindowsTag {
     #[default]
     None,

@@ -2,15 +2,17 @@ use crate::card::Card;
 use crate::choice_req::ChoiceReq;
 use crate::choice_res::ChoiceRes;
 use crate::common::{EntryId, IdGenerator, PlayerId};
-use crate::effect::{Action, DoEffect};
+use crate::effect::{Action, DoEffect, WindowsTag};
 use crate::game_diff::GameDiff;
 use crate::lua_api::LuaApi;
 use crate::player::Player;
 use crate::player_actions::{PlayerAction, ReadPlayerActions};
 use crate::targeting::Targeting;
+use crate::window_event::WindowEvent;
 use log::{debug, info, trace, warn};
 use rand::seq::SliceRandom;
 use rand::thread_rng;
+use std::cmp::PartialEq;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -148,7 +150,7 @@ impl Game {
                 let card = self.get(card_id);
 
                 // 支持不支付费用的登场
-                let choice_res = if card.card_info.cost == 0 {
+                let choice_res = if card.card_info.cost > 0 {
                     self.read_choice(ChoiceReq::Cost(card_id))
                 } else {
                     ChoiceRes::Cost {
@@ -174,6 +176,25 @@ impl Game {
                 self.next_phase();
             }
         }
+    }
+
+    pub fn emit_event(&mut self, window_event: WindowEvent) {
+        match window_event {
+            WindowEvent::Cost { card } => {
+                todo!()
+            }
+            WindowEvent::Set { card } => {
+                let card_instance = self.get(card);
+                for effect in card_instance.card_info.effects {
+                    if effect.windows_tag == WindowsTag::OnSet {
+                        // todo 这里在思考更加复杂的 情况
+                        info!("登场时发动效果：{:?}", effect.do_effect);
+                        self.do_effect_stacks.push_front(effect.do_effect.clone());
+                    }
+                }
+            }
+        }
+        self.process_effect();
     }
 
     // 结算效果
@@ -209,20 +230,28 @@ impl Game {
                         self.game_states[self.current_player]
                             .cost
                             .retain(|&x| x != card_id);
-
-                        for zone in self.game_states[self.current_player].zone.iter_mut() {
+                        let mut flag = false;
+                        for zone in self.game_states[self.current_player.clone()]
+                            .zone
+                            .iter_mut()
+                        {
                             match zone {
                                 Zone::FrontEnd { id, cards } => {
                                     if *id == zone_id {
-                                        cards.push(card_id)
+                                        cards.push(card_id);
+                                        flag = true;
                                     }
                                 }
                                 Zone::BackEnd { id, cards } => {
                                     if *id == zone_id {
-                                        cards.push(card_id)
+                                        cards.push(card_id);
                                     }
                                 }
                             }
+                        }
+                        // 抛出登场时事件
+                        if flag {
+                            self.emit_event(WindowEvent::Set { card: card_id });
                         }
                     }
                 },

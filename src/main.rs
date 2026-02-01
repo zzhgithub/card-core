@@ -15,6 +15,7 @@ mod targeting;
 mod game_diff;
 mod choice_req;
 mod choice_res;
+mod window_event;
 
 use crate::desk_loader::load_desks;
 use crate::effect::EffectBuilder;

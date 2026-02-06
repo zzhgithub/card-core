@@ -114,7 +114,7 @@ impl ReadPlayerActions for Game {
                 // 检查费用是否足够
                 if !self.check_cost(card) {
                     error!("无法支付费用,怎么返回原处");
-                    self.to_hand(card);
+                    self.set_rollback(card);
                     return ChoiceRes::None;
                 }
                 loop {
@@ -142,7 +142,7 @@ impl ReadPlayerActions for Game {
                     }
                     if tokens.len() == 1 && tokens[0] == "cancel" {
                         info!("取消操作");
-                        self.to_hand(card);
+                        self.set_rollback(card);
                         return ChoiceRes::None;
                     }
                     if tokens.len() == 2 {

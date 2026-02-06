@@ -128,8 +128,8 @@ impl Game {
         can_cost >= card.card_info.cost
     }
 
-    // 进入手牌 不产生任何事件
-    pub fn to_hand(&mut self, card: EntryId) {
+    // 登场支付费用回滚
+    pub fn set_rollback(&mut self, card: EntryId) {
         if !self.game_states[self.current_player].cost.contains(&card) {
             // 只有从手卡区登场的卡才在这里返回
             self.game_states[self.current_player].hand.push(card);

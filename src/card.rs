@@ -94,6 +94,10 @@ impl UserData for CardInfoBuilder {
 pub struct Card {
     pub entry_id: EntryId,
     pub card_info: CardInfo,
+    // 攻击计数器
+    pub attack_counter: usize,
+    // 攻击最大次数计数器
+    pub attack_max: usize,
 }
 
 impl Card {
@@ -109,6 +113,8 @@ impl Card {
                 res.push(Card {
                     entry_id: id_generator.next(),
                     card_info: card_info.clone(),
+                    attack_counter: 0,
+                    attack_max: 1,
                 });
             } else {
                 warn!("Card with id {} not found", card_info_id);

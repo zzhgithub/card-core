@@ -136,4 +136,6 @@ pub enum Action {
         card_id: EntryId,
         zone_id: EntryId,
     },
+    // 伤害
+    Damage(usize),
 }

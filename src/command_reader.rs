@@ -3,15 +3,14 @@ use crate::choice_res::ChoiceRes;
 use crate::common::EntryId;
 use crate::game::{Game, GamePhase};
 use crate::player::Player;
-use crate::player_actions::PlayerAction::Targeting;
 use crate::player_actions::{PlayerAction, ReadPlayerActions};
 use log::{error as log_error, error, info};
 use std::cmp::PartialEq;
 use std::io;
 
 impl ReadPlayerActions for Game {
-    fn read_action(&mut self, game_phase: GamePhase) {
-        while self.current_phase() == game_phase {
+    fn read_action_main(&mut self) {
+        while self.current_phase() == GamePhase::Main || self.current_phase() == GamePhase::Main2 {
             let mut input = String::new();
             io::stdin().read_line(&mut input).unwrap();
             let tokens: Vec<_> = input.trim().split_whitespace().collect();
@@ -20,7 +19,7 @@ impl ReadPlayerActions for Game {
             }
             match tokens[0] {
                 "help" => {
-                    self.help();
+                    self.help_main();
                 }
                 "hp" => {
                     info!("hp: {:?}", self.current_hp());
@@ -45,7 +44,7 @@ impl ReadPlayerActions for Game {
                         let entry_id_str = tokens[1];
                         if let Ok(entry_id) = entry_id_str.parse() {
                             let card = self.get(entry_id);
-                            info!("Looking for {:?}", card);
+                            info!("卡片详情 {:?}", card);
                         }
                     }
                 }
@@ -67,7 +66,41 @@ impl ReadPlayerActions for Game {
                     }
                 }
                 "pass" => {
-                    self.deal_player_action(PlayerAction::Pass);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn read_action_fight(&mut self) {
+        while self.current_phase() == GamePhase::Fight {
+            // 提示自己场上可以攻击的卡
+            info!("look card Id 查看详情");
+            info!("可以进行攻击的区域为[{:?}]", self.get_attack_zones());
+            info!("对手场上可以被进攻的区域[{:?}]", self.get_attacked_zones());
+            // 读取数据
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+            let tokens: Vec<_> = input.trim().split_whitespace().collect();
+            if tokens.is_empty() {
+                continue;
+            }
+            // 这里只生成两种的处理
+            match tokens[0] {
+                "look" => {
+                    if tokens.len() == 2 {
+                        let entry_id_str = tokens[1];
+                        if let Ok(entry_id) = entry_id_str.parse() {
+                            let card = self.get(entry_id);
+                            info!("卡片详情 {:?}", card);
+                        }
+                    }
+                }
+                "attack" => {
+                    // 这里处理攻击的对象问题
+                }
+                "pass" => {
                     break;
                 }
                 _ => {}
@@ -80,7 +113,7 @@ impl ReadPlayerActions for Game {
             ChoiceReq::Cost(card) => {
                 // 检查费用是否足够
                 if !self.check_cost(card) {
-                    error!("无法支付费用，返回手卡");
+                    error!("无法支付费用,怎么返回原处");
                     self.to_hand(card);
                     return ChoiceRes::None;
                 }
@@ -90,13 +123,27 @@ impl ReadPlayerActions for Game {
                     info!("Hand {:?}", self.current_hand());
                     info!("Real Point:{:?}", self.current_real_point());
                     info!("Zone {:?}", self.current_zone());
-                    info!("请选择 你要的支付费用的卡。");
+                    info!(
+                        "登场[{:?}]支付的费用为 {:?}",
+                        self.get(card).card_info.clone().name,
+                        self.get(card).card_info.clone().cost
+                    );
+                    info!(
+                        "请选择 你要的支付费用的卡\
+                        \n。[id1,id2,.. realPoint] 任意手卡id（逗号隔开）和realPoint的组合\
+                        \n取消操作 cancel"
+                    );
                     //FIXME ： 这里的阅读循环怎么优化重构？
                     let mut input = String::new();
                     io::stdin().read_line(&mut input).unwrap();
                     let tokens: Vec<_> = input.trim().split_whitespace().collect();
                     if tokens.is_empty() {
                         continue;
+                    }
+                    if tokens.len() == 1 && tokens[0] == "cancel" {
+                        info!("取消操作");
+                        self.to_hand(card);
+                        return ChoiceRes::None;
                     }
                     if tokens.len() == 2 {
                         let hands_str = tokens[0];
@@ -126,7 +173,7 @@ impl ReadPlayerActions for Game {
         }
     }
 
-    fn help(&self) {
+    fn help_main(&self) {
         info!(
             "Player {:?} 请操作:\n\
             help    帮助\n\

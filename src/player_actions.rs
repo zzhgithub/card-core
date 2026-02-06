@@ -7,13 +7,16 @@ use crate::targeting::Targeting;
 use std::fmt::Debug;
 
 pub trait ReadPlayerActions {
-    // 阅读指令
-    fn read_action(&mut self, game_phase: GamePhase);
+    // 在主要阶段读取数据
+    fn read_action_main(&mut self);
+
+    // 在战斗阶段读取数据
+    fn read_action_fight(&mut self);
 
     // 阅读选择指令
     fn read_choice(&mut self, choice: ChoiceReq) -> ChoiceRes;
 
-    fn help(&self);
+    fn help_main(&self);
 }
 
 #[derive(Debug, Clone)]
@@ -26,10 +29,6 @@ pub enum PlayerAction {
     // 发动效果
     EffectCard {
         card_id: EntryId,
-    },
-    // 选择卡片
-    Targeting {
-        target: Targeting,
     },
     // 攻击
     AttackCard {

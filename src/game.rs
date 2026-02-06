@@ -76,6 +76,15 @@ impl Game {
             .clone()
     }
 
+    // 返回卡片的引用
+    pub fn get_mut(&mut self, id: EntryId) -> &mut Card {
+        self.cards
+            .iter_mut()
+            .filter(|card| card.entry_id == id)
+            .next()
+            .unwrap()
+    }
+
     pub fn current_player(&self) -> PlayerId {
         self.current_player
     }
@@ -121,7 +130,10 @@ impl Game {
 
     // 进入手牌 不产生任何事件
     pub fn to_hand(&mut self, card: EntryId) {
-        self.game_states[self.current_player].hand.push(card);
+        if !self.game_states[self.current_player].cost.contains(&card) {
+            // 只有从手卡区登场的卡才在这里返回
+            self.game_states[self.current_player].hand.push(card);
+        }
     }
 
     // 进入下一个阶段
@@ -137,6 +149,7 @@ impl Game {
         self.game_states[self.current_player].cost.extend(hands);
         // 减少值
         self.game_states[self.current_player].real_point -= real_point;
+        // TODO 这里抛出一系列事件 给后续自己排连锁
     }
 
     pub fn deal_player_action(&mut self, player_acton: PlayerAction) {
@@ -170,18 +183,16 @@ impl Game {
                 }
             }
             PlayerAction::EffectCard { .. } => {}
-            PlayerAction::Targeting { .. } => {}
             PlayerAction::AttackCard { .. } => {}
-            PlayerAction::Pass => {
-                self.next_phase();
-            }
+            PlayerAction::Pass => {}
         }
     }
 
     pub fn emit_event(&mut self, window_event: WindowEvent) {
         match window_event {
             WindowEvent::Cost { card } => {
-                todo!()
+                // 这里实现登场时效果事件 这里要有一个自排连锁的问题
+                todo!();
             }
             WindowEvent::Set { card } => {
                 let card_instance = self.get(card);
@@ -254,6 +265,9 @@ impl Game {
                             self.emit_event(WindowEvent::Set { card: card_id });
                         }
                     }
+                    _ => {
+                        todo!();
+                    }
                 },
                 DoEffect::AndAction(actions) => {
                     for action in actions {
@@ -276,6 +290,58 @@ impl Game {
         (self.current_player + 1) % self.players.len()
     }
 
+    // 获取可以进攻的 区域
+    pub fn get_attack_zones(&self) -> Vec<Zone> {
+        self.game_states[self.current_player]
+            .zone
+            .iter()
+            .filter(|&zone| {
+                if let Zone::FrontEnd { id, cards } = zone {
+                    if let Some(first) = cards.first() {
+                        if let card = self.get(first.clone()) {
+                            return card.attack_counter < card.attack_max;
+                        }
+                    }
+                }
+                false
+            })
+            .cloned()
+            .collect()
+    }
+
+    // 获取对手场上可以攻击的区域
+    pub fn get_attacked_zones(&self) -> Vec<Zone> {
+        self.game_states[self.next_player_id()]
+            .zone
+            .iter()
+            .filter(|&zone| {
+                if let Zone::FrontEnd { id, cards } = zone {
+                    return cards.len() > 0;
+                }
+                false
+            })
+            .cloned()
+            .collect()
+    }
+
+    // 刷新卡片上的计数器
+    fn flash_cards(&mut self) {
+        info!("刷新卡片的计数器");
+        for zone in self.game_states[self.current_player].zone.clone().iter() {
+            match zone {
+                Zone::FrontEnd { id, cards } => {
+                    for entry_id in cards.iter() {
+                        let card = self.get_mut(entry_id.clone());
+                        card.attack_counter = 0;
+                    }
+                }
+                Zone::BackEnd { id, cards } => {
+                    // todo 这里没有攻击次数但是 有其他引用计数
+                }
+            }
+        }
+    }
+
     // 开始游戏
     pub fn run(&mut self) {
         loop {
@@ -283,6 +349,7 @@ impl Game {
             match self.current_phase {
                 GamePhase::Start => {
                     info!("player[{:?}] 回合开始阶段", self.current_player);
+                    self.flash_cards();
                     self.next_phase();
                 }
                 GamePhase::Draw => {
@@ -303,16 +370,19 @@ impl Game {
                 }
                 GamePhase::Main => {
                     info!("player[{:?}] 主要阶段1", self.current_player);
-                    self.help();
-                    self.read_action(GamePhase::Main);
+                    self.help_main();
+                    self.read_action_main();
                     self.next_phase();
                 }
                 GamePhase::Fight => {
                     info!("player[{:?}] 战斗阶段", self.current_player);
+                    self.read_action_fight();
                     self.next_phase();
                 }
                 GamePhase::Main2 => {
                     info!("player[{:?}] 主要阶段2", self.current_player);
+                    self.help_main();
+                    self.read_action_main();
                     self.next_phase();
                 }
                 GamePhase::End => {

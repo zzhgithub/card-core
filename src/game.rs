@@ -9,7 +9,7 @@ use crate::player::Player;
 use crate::player_actions::{PlayerAction, ReadPlayerActions};
 use crate::targeting::Targeting;
 use crate::window_event::WindowEvent;
-use log::{debug, info, trace, warn};
+use log::{debug, error, info, trace, warn};
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use std::cmp::PartialEq;
@@ -141,6 +141,7 @@ impl Game {
         self.current_phase = GamePhase::next(&self.current_phase)
     }
 
+    // hands 支付的手牌 real_point 支付的点数
     pub fn cost(&mut self, hands: Vec<EntryId>, real_point: usize) {
         // 批量移动
         self.game_states[self.current_player]
@@ -152,8 +153,52 @@ impl Game {
         // TODO 这里抛出一系列事件 给后续自己排连锁
     }
 
+    fn check_attack_action(&self, player_action: PlayerAction) -> bool {
+        if let PlayerAction::AttackCard { source, target } = player_action {
+            if let Targeting::TargetZone(zone_id) = source {
+                if let Some(for_zone) = self.game_states[self.current_player]
+                    .zone
+                    .iter()
+                    .filter(|zone| zone.has_id(zone_id) && zone.has_cards())
+                    .next()
+                {
+                    return if self.zone_can_attack(for_zone) {
+                        let vec = self.get_attacked_zones();
+                        if vec.len() > 0 {
+                            // 存在攻击区域
+                            if let Targeting::TargetZone(target_id) = target {
+                                true
+                            } else {
+                                error!("进攻目标不正确");
+                                false
+                            }
+                        } else {
+                            // 直接攻击玩家
+                            if let Targeting::TargetPlayerOpponent = target {
+                                true
+                            } else {
+                                error!("进攻目标不正确");
+                                false
+                            }
+                        }
+                    } else {
+                        error!("当前区域不能攻击");
+                        false
+                    };
+                } else {
+                    error!("来源位置不存在");
+                    return false;
+                }
+            } else {
+                error!("攻击的卡选择的类型不正确");
+                return false;
+            }
+        }
+        false
+    }
+
     pub fn deal_player_action(&mut self, player_acton: PlayerAction) {
-        match player_acton {
+        match player_acton.clone() {
             // 放置卡片
             PlayerAction::SetCard { card_id, zone_id } => {
                 self.game_states[self.current_player]
@@ -183,16 +228,231 @@ impl Game {
                 }
             }
             PlayerAction::EffectCard { .. } => {}
-            PlayerAction::AttackCard { .. } => {}
+            PlayerAction::AttackCard { source, target } => {
+                // 判断源头是否合法
+                // 判断对象是否合法
+                if self.check_attack_action(player_acton.clone()) {
+                    // 抛出事件
+                    self.emit_event(WindowEvent::Attack {
+                        source: source.clone(),
+                        target: target.clone(),
+                    });
+                    // 处理战斗
+                    self.deal_fight(source, target);
+                    self.process_effect();
+                }
+            }
             PlayerAction::Pass => {}
         }
+    }
+
+    // 处理战斗
+    pub fn deal_fight(&mut self, source: Targeting, target: Targeting) {
+        // 如果源不存在了 就停止
+        // 如果目标不存在了 或者有了新的目标 就回滚战斗需要询问对手
+        // 进入战斗阶段
+        if let Targeting::TargetZone(zone_id) = source {
+            if let Some(for_zone) = self.game_states[self.current_player]
+                .zone
+                .iter()
+                .filter(|zone| zone.has_id(zone_id) && zone.has_cards())
+                .next()
+            {
+                let attacked_zones = self.get_attacked_zones();
+
+                if let Targeting::TargetZone(target_id) = target {
+                    // 判断 这个zoneId下是不是没有卡了
+                    if let Some(_) = attacked_zones
+                        .iter()
+                        .filter(|zone| zone.has_id(target_id))
+                        .next()
+                    {
+                        // 找到了进行结算
+                        self.deal_fight_zone(zone_id, target_id);
+                    } else {
+                        // 没有找到进行询问
+                    }
+                }
+                if let Targeting::TargetPlayerOpponent = target {
+                    // 判断这 zoneId是不是还有卡
+                    if attacked_zones.len() > 0 {
+                        // 进行询问
+                    } else {
+                        // 进行结算
+                        self.deal_fight_direct(zone_id);
+                    }
+                }
+
+                // 进行战斗结算
+            }
+        }
+    }
+
+    // 处理直接攻击的情况
+    fn deal_fight_direct(&mut self, my_zone: EntryId) {
+        // 获取卡片的信息
+        // effect 增加攻击计数
+        // 如果 realPoint = 0 realPoint +1
+        // 如果 realPoint > 0 询问 是否要使用 如果使用了 则 伤害 扣除 RealPoint
+    }
+
+    // 计算的发生的战斗
+    fn deal_fight_zone(&mut self, my_zone_id: EntryId, target_zone_id: EntryId) {
+        if let Some(my_zone) = self.get_my_zone(my_zone_id) {
+            if let Some(target_zone) = self.get_other_zone(target_zone_id) {
+                if let Zone::FrontEnd {
+                    id: _id,
+                    cards: my_cards,
+                } = my_zone
+                {
+                    if let Zone::FrontEnd {
+                        id: _id,
+                        cards: target_cards,
+                    } = target_zone
+                    {
+                        let card = self.get(my_cards.first().unwrap().clone());
+                        let target_card = self.get(target_cards.first().unwrap().clone());
+                        if card.card_info.ack > target_card.card_info.ack {
+                            // 攻击胜利
+                            info!(
+                                "战斗胜利 {:?} > {:?}",
+                                card.card_info.ack, target_card.card_info.ack
+                            );
+                            // 攻击计数+1
+                            self.do_effect_stacks.push_front(DoEffect::Action {
+                                source: Targeting::None,
+                                targeting: Targeting::None,
+                                action: Action::AttackCounterUp(card.entry_id, 1),
+                            });
+                            // 破坏对手卡
+                            self.do_effect_stacks.push_front(DoEffect::Action {
+                                source: Targeting::None,
+                                targeting: Targeting::None,
+                                action: Action::FightDestroy {
+                                    zone_id: target_zone_id,
+                                },
+                            });
+                            // 增加点数
+                            self.do_effect_stacks.push_front(DoEffect::Action {
+                                source: Targeting::None,
+                                targeting: Targeting::TargetPlayerSelf,
+                                action: Action::AddRealPoint(1),
+                            });
+                        } else if card.card_info.ack == target_card.card_info.ack {
+                            info!(
+                                "战斗平手 {:?} = {:?}",
+                                card.card_info.ack, target_card.card_info.ack
+                            );
+                            // 平手
+                            // 两张卡都破坏
+                            self.do_effect_stacks.push_front(DoEffect::Action {
+                                source: Targeting::None,
+                                targeting: Targeting::None,
+                                action: Action::FightDestroy {
+                                    zone_id: target_zone_id,
+                                },
+                            });
+                            self.do_effect_stacks.push_front(DoEffect::Action {
+                                source: Targeting::None,
+                                targeting: Targeting::None,
+                                action: Action::FightDestroy {
+                                    zone_id: my_zone_id,
+                                },
+                            });
+                            // 增加点数
+                            self.do_effect_stacks.push_front(DoEffect::Action {
+                                source: Targeting::None,
+                                targeting: Targeting::TargetPlayerSelf,
+                                action: Action::AddRealPoint(1),
+                            });
+                        } else {
+                            info!(
+                                "战斗失败 {:?} = {:?}",
+                                card.card_info.ack, target_card.card_info.ack
+                            );
+                            // 破坏自己卡
+                            self.do_effect_stacks.push_front(DoEffect::Action {
+                                source: Targeting::None,
+                                targeting: Targeting::None,
+                                action: Action::FightDestroy {
+                                    zone_id: my_zone_id,
+                                },
+                            });
+                            // 增加点数
+                            self.do_effect_stacks.push_front(DoEffect::Action {
+                                source: Targeting::None,
+                                targeting: Targeting::TargetPlayerSelf,
+                                action: Action::AddRealPoint(1),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn get_my_zone(&self, id: EntryId) -> Option<&Zone> {
+        self.game_states[self.current_player]
+            .zone
+            .iter()
+            .filter(|zone| zone.has_id(id))
+            .next()
+    }
+
+    fn get_other_zone(&self, id: EntryId) -> Option<&Zone> {
+        self.game_states[self.next_player_id()]
+            .zone
+            .iter()
+            .filter(|zone| zone.has_id(id))
+            .next()
+    }
+
+    fn remove_my_zone_cards(&mut self, id: EntryId) -> Vec<EntryId> {
+        let mut ret = Vec::new();
+        if let Some(zone) = self.game_states[self.current_player]
+            .zone
+            .iter_mut()
+            .filter(|zone| zone.has_id(id))
+            .next()
+        {
+            match zone {
+                Zone::FrontEnd { id, cards } => {
+                    ret.extend(cards.drain(..));
+                }
+                Zone::BackEnd { id, cards } => {
+                    ret.extend(cards.drain(..));
+                }
+            }
+        }
+        ret
+    }
+
+    fn remove_other_zone_cards(&mut self, id: EntryId) -> Vec<EntryId> {
+        let mut ret = Vec::new();
+        let next_id = self.next_player_id();
+        if let Some(zone) = self.game_states[next_id]
+            .zone
+            .iter_mut()
+            .filter(|zone| zone.has_id(id))
+            .next()
+        {
+            match zone {
+                Zone::FrontEnd { id, cards } => {
+                    ret.extend(cards.drain(..));
+                }
+                Zone::BackEnd { id, cards } => {
+                    ret.extend(cards.drain(..));
+                }
+            }
+        }
+        ret
     }
 
     pub fn emit_event(&mut self, window_event: WindowEvent) {
         match window_event {
             WindowEvent::Cost { card } => {
                 // 这里实现登场时效果事件 这里要有一个自排连锁的问题
-                todo!();
+                warn!("TODO");
             }
             WindowEvent::Set { card } => {
                 let card_instance = self.get(card);
@@ -203,6 +463,10 @@ impl Game {
                         self.do_effect_stacks.push_front(effect.do_effect.clone());
                     }
                 }
+            }
+            WindowEvent::Attack { source, target } => {
+                // 处理攻击时的效果
+                warn!("Attack Event TODO");
             }
         }
         self.process_effect();
@@ -265,8 +529,69 @@ impl Game {
                             self.emit_event(WindowEvent::Set { card: card_id });
                         }
                     }
-                    _ => {
-                        todo!();
+                    Action::Damage(num) => {
+                        if let Targeting::TargetPlayerSelf = targeting {
+                            let real_point = self.game_states[self.current_player].real_point;
+                            if self.game_states[self.current_player].hp <= num {
+                                warn!("当前玩家生命值不足")
+                                //todo
+                            }
+                        }
+                        if let Targeting::TargetPlayerOpponent = targeting {
+                            let real_point = self.game_states[self.next_player_id()].real_point;
+                            if self.game_states[self.next_player_id()].hp <= num {
+                                warn!("对方玩家生命值不足")
+                                // todo 这里使用不足的补偿极值
+                            }
+                        }
+                    }
+                    Action::AddRealPoint(num) => {
+                        if let Targeting::TargetPlayerSelf = targeting {
+                            self.game_states[self.current_player].real_point += num;
+                            // todo 这里的要考虑溢出的情况
+                            info!("当前玩家RealPoint 增加[{:?}]", num);
+                        }
+                        if let Targeting::TargetPlayerOpponent = targeting {
+                            let next_id = self.next_player_id();
+                            self.game_states[next_id].real_point += num;
+                            // todo 这里的要考虑溢出的情况
+                            info!("对方玩家RealPoint 增加[{:?}]", num);
+                        }
+                    }
+                    Action::UseRealPoint(num) => {
+                        if let Targeting::TargetPlayerSelf = targeting {
+                            if self.game_states[self.current_player].real_point >= num {
+                                self.game_states[self.current_player].real_point -= num;
+                                info!("当前玩家RealPoint 减少[{:?}]", num);
+                            }
+                        }
+                        if let Targeting::TargetPlayerOpponent = targeting {
+                            let next_id = self.next_player_id();
+                            if self.game_states[next_id].real_point >= num {
+                                self.game_states[next_id].real_point -= num;
+                                info!("对方玩家RealPoint 减少[{:?}]", num);
+                            }
+                        }
+                    }
+                    // 战斗破坏
+                    Action::FightDestroy { zone_id } => {
+                        let cards = self.remove_my_zone_cards(zone_id);
+                        self.destroy_zone(cards, Targeting::TargetPlayerSelf);
+
+                        let cards = self.remove_other_zone_cards(zone_id);
+                        self.destroy_zone(cards, Targeting::TargetPlayerOpponent);
+                    }
+                    Action::AttackCounterUp(card_id, num) => {
+                        let card = self.get_mut(card_id);
+                        card.attack_counter += num;
+                    }
+                    Action::AttackCountDown(card_id, num) => {
+                        let card = self.get_mut(card_id);
+                        if card.attack_counter >= num {
+                            card.attack_counter -= num;
+                        } else {
+                            card.attack_counter = 0;
+                        }
                     }
                 },
                 DoEffect::AndAction(actions) => {
@@ -281,6 +606,20 @@ impl Game {
         }
     }
 
+    // 破坏场地上的卡
+    pub fn destroy_zone<T: IntoIterator<Item = EntryId>>(
+        &mut self,
+        cards: T,
+        targeting: Targeting,
+    ) {
+        let player_id = if let Targeting::TargetPlayerSelf = targeting {
+            self.current_player.clone()
+        } else {
+            self.next_player_id()
+        };
+        self.game_states[player_id].grave.extend(cards);
+    }
+
     pub fn current_phase(&self) -> GamePhase {
         self.current_phase
     }
@@ -290,21 +629,24 @@ impl Game {
         (self.current_player + 1) % self.players.len()
     }
 
+    // 判断区域是否可以攻击
+    pub fn zone_can_attack(&self, zone: &Zone) -> bool {
+        if let Zone::FrontEnd { id, cards } = zone {
+            if let Some(first) = cards.first() {
+                if let card = self.get(first.clone()) {
+                    return card.attack_counter < card.attack_max;
+                }
+            }
+        }
+        false
+    }
+
     // 获取可以进攻的 区域
     pub fn get_attack_zones(&self) -> Vec<Zone> {
         self.game_states[self.current_player]
             .zone
             .iter()
-            .filter(|&zone| {
-                if let Zone::FrontEnd { id, cards } = zone {
-                    if let Some(first) = cards.first() {
-                        if let card = self.get(first.clone()) {
-                            return card.attack_counter < card.attack_max;
-                        }
-                    }
-                }
-                false
-            })
+            .filter(|&zone| self.zone_can_attack(zone))
             .cloned()
             .collect()
     }
@@ -517,5 +859,21 @@ impl Zone {
             });
         }
         ret
+    }
+
+    // 是否包含id
+    pub fn has_id(&self, zone_id: EntryId) -> bool {
+        match self {
+            Zone::FrontEnd { id, cards } => id.clone() == zone_id,
+            Zone::BackEnd { id, cards } => id.clone() == zone_id,
+        }
+    }
+
+    // 是否有卡片
+    pub fn has_cards(&self) -> bool {
+        match self {
+            Zone::FrontEnd { id, cards } => cards.len() > 0,
+            Zone::BackEnd { id, cards } => cards.len() > 0,
+        }
     }
 }

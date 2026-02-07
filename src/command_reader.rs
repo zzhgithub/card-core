@@ -1,9 +1,12 @@
 use crate::choice_req::ChoiceReq;
 use crate::choice_res::ChoiceRes;
 use crate::common::EntryId;
+use crate::effect::DoEffect::Action;
 use crate::game::{Game, GamePhase};
 use crate::player::Player;
 use crate::player_actions::{PlayerAction, ReadPlayerActions};
+use crate::targeting::Targeting;
+use crate::targeting::Targeting::TargetZone;
 use log::{error as log_error, error, info};
 use std::cmp::PartialEq;
 use std::io;
@@ -79,6 +82,11 @@ impl ReadPlayerActions for Game {
             info!("look card Id 查看详情");
             info!("可以进行攻击的区域为[{:?}]", self.get_attack_zones());
             info!("对手场上可以被进攻的区域[{:?}]", self.get_attacked_zones());
+            info!(
+                "攻击，选取可以攻击的区域进攻某个其他区域\n\
+            attack [zoneId] [zoneId] 自己进攻对手的区域\n\
+            attack [zoneId] 直接攻击对手"
+            );
             // 读取数据
             let mut input = String::new();
             io::stdin().read_line(&mut input).unwrap();
@@ -99,6 +107,29 @@ impl ReadPlayerActions for Game {
                 }
                 "attack" => {
                     // 这里处理攻击的对象问题
+                    if tokens.len() == 3 {
+                        // 取第二个和三个
+                        let my_zone = tokens[1];
+                        let opponent_zone = tokens[2];
+                        if let Ok(my_zone_id) = my_zone.parse() {
+                            if let Ok(opponent_zone_id) = opponent_zone.parse() {
+                                self.deal_player_action(PlayerAction::AttackCard {
+                                    source: TargetZone(my_zone_id),
+                                    target: TargetZone(opponent_zone_id),
+                                });
+                            }
+                        }
+                    }
+                    if tokens.len() == 2 {
+                        // 值取源
+                        let my_zone = tokens[1];
+                        if let Ok(my_zone_id) = my_zone.parse() {
+                            self.deal_player_action(PlayerAction::AttackCard {
+                                source: TargetZone(my_zone_id),
+                                target: Targeting::TargetPlayerOpponent,
+                            });
+                        }
+                    }
                 }
                 "pass" => {
                     break;

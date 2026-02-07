@@ -138,4 +138,16 @@ pub enum Action {
     },
     // 伤害
     Damage(usize),
+    // 获取真实点数
+    AddRealPoint(usize),
+    // 消耗真实点数
+    UseRealPoint(usize),
+    // 战斗破坏
+    FightDestroy {
+        zone_id: EntryId,
+    },
+    // 攻击计数器增加
+    AttackCounterUp(EntryId, usize),
+    // 攻击计数器减少
+    AttackCountDown(EntryId, usize),
 }

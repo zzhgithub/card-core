@@ -7,4 +7,5 @@ pub enum ChoiceRes {
         hands: Vec<EntryId>,
         real_point: usize,
     },
+    FightDamageByRealPoint(usize),
 }

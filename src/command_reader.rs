@@ -4,10 +4,11 @@ use crate::common::EntryId;
 use crate::effect::DoEffect::Action;
 use crate::game::{Game, GamePhase};
 use crate::player::Player;
+use crate::player_actions::PlayerAction::Pass;
 use crate::player_actions::{PlayerAction, ReadPlayerActions};
 use crate::targeting::Targeting;
 use crate::targeting::Targeting::TargetZone;
-use log::{error as log_error, error, info};
+use log::{error as log_error, error, info, warn};
 use std::cmp::PartialEq;
 use std::io;
 
@@ -26,6 +27,9 @@ impl ReadPlayerActions for Game {
                 }
                 "hp" => {
                     info!("hp: {:?}", self.current_hp());
+                }
+                "real" => {
+                    info!("real: {:?}", self.current_real_point());
                 }
                 "hand" => {
                     info!("Hand {:?}", self.current_hand());
@@ -139,6 +143,44 @@ impl ReadPlayerActions for Game {
         }
     }
 
+    // 选择是否使用伤害
+    fn read_fight_damage(&mut self) -> ChoiceRes {
+        loop {
+            info!(
+                "直接攻击玩家。是否消耗RealPoint对对手造成伤害,当前RealPoint[{:?}]",
+                self.current_real_point()
+            );
+            info!("造成伤害[num]。放弃伤害，获得RealPoint: pass|0");
+            // 读取数据
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+            let tokens: Vec<_> = input.trim().split_whitespace().collect();
+            if tokens.is_empty() {
+                continue;
+            }
+            if tokens.len() == 1 {
+                if tokens[0] == "pass" {
+                    // 跳过获取
+                    break;
+                }
+                if let Ok(num) = tokens[0].parse() {
+                    if num == 0 {
+                        break;
+                    }
+                    // 这里进行处理
+                    if num > self.current_real_point() {
+                        error!("不能申请大于当前拥有的RealPoint");
+                        continue;
+                    }
+                    return ChoiceRes::FightDamageByRealPoint(num);
+                } else {
+                    warn!("类型解析错误")
+                }
+            }
+        }
+        ChoiceRes::None
+    }
+
     fn read_choice(&mut self, choice: ChoiceReq) -> ChoiceRes {
         match choice {
             ChoiceReq::Cost(card) => {
@@ -209,6 +251,7 @@ impl ReadPlayerActions for Game {
             "Player {:?} 请操作:\n\
             help    帮助\n\
             hp      血量\n\
+            real    真实点数\n\
             hand    查看手牌\n\
             zone    查看场地\n\
             cost    查看费用区\n\

@@ -12,6 +12,7 @@ pub trait ReadPlayerActions {
 
     // 在战斗阶段读取数据
     fn read_action_fight(&mut self);
+    fn read_fight_damage(&mut self) -> ChoiceRes;
 
     // 阅读选择指令
     fn read_choice(&mut self, choice: ChoiceReq) -> ChoiceRes;

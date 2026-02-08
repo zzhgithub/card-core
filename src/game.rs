@@ -260,6 +260,7 @@ impl Game {
             {
                 let attacked_zones = self.get_attacked_zones();
 
+                // 卡片和卡片进行战斗
                 if let Targeting::TargetZone(target_id) = target {
                     // 判断 这个zoneId下是不是没有卡了
                     if let Some(_) = attacked_zones
@@ -273,6 +274,8 @@ impl Game {
                         // 没有找到进行询问
                     }
                 }
+
+                // 卡片直接攻击玩家
                 if let Targeting::TargetPlayerOpponent = target {
                     // 判断这 zoneId是不是还有卡
                     if attacked_zones.len() > 0 {
@@ -282,8 +285,6 @@ impl Game {
                         self.deal_fight_direct(zone_id);
                     }
                 }
-
-                // 进行战斗结算
             }
         }
     }
@@ -292,8 +293,62 @@ impl Game {
     fn deal_fight_direct(&mut self, my_zone: EntryId) {
         // 获取卡片的信息
         // effect 增加攻击计数
-        // 如果 realPoint = 0 realPoint +1
-        // 如果 realPoint > 0 询问 是否要使用 如果使用了 则 伤害 扣除 RealPoint
+
+        if let Some(zone) = self.get_my_zone(my_zone) {
+            match zone {
+                Zone::FrontEnd { id, cards } => {
+                    if let Some(card_id) = cards.first() {
+                        // 攻击计数+1
+                        self.do_effect_stacks.push_front(DoEffect::Action {
+                            source: Targeting::None,
+                            targeting: Targeting::None,
+                            action: Action::AttackCounterUp(card_id.clone(), 1),
+                        });
+
+                        if self.current_real_point() == 0 {
+                            // 如果 realPoint = 0 realPoint +1
+                            info!("当前无RealPoint。");
+                            self.do_effect_stacks.push_front(DoEffect::Action {
+                                source: Default::default(),
+                                targeting: Targeting::TargetPlayerSelf,
+                                action: Action::AddRealPoint(1),
+                            });
+                        } else {
+                            // 如果 realPoint > 0 询问 是否要使用 如果使用了 则 伤害 扣除 RealPoint
+                            info!("当前有RealPoint。询问如何使用");
+                            let choice_res = self.read_fight_damage();
+                            match choice_res {
+                                ChoiceRes::None => {
+                                    self.do_effect_stacks.push_front(DoEffect::Action {
+                                        source: Default::default(),
+                                        targeting: Targeting::TargetPlayerSelf,
+                                        action: Action::AddRealPoint(1),
+                                    });
+                                }
+                                ChoiceRes::FightDamageByRealPoint(num) => {
+                                    // 使用RealPoint
+                                    self.do_effect_stacks.push_front(DoEffect::Action {
+                                        source: Default::default(),
+                                        targeting: Targeting::TargetPlayerSelf,
+                                        action: Action::UseRealPoint(num),
+                                    });
+                                    // 造成伤害
+                                    self.do_effect_stacks.push_front(DoEffect::Action {
+                                        source: Targeting::TargetZone(my_zone.clone()),
+                                        targeting: Targeting::TargetPlayerOpponent,
+                                        action: Action::Damage(num),
+                                    });
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                Zone::BackEnd { .. } => {
+                    warn!("后场卡不战斗");
+                }
+            }
+        }
     }
 
     // 计算的发生的战斗
@@ -532,16 +587,54 @@ impl Game {
                     Action::Damage(num) => {
                         if let Targeting::TargetPlayerSelf = targeting {
                             let real_point = self.game_states[self.current_player].real_point;
-                            if self.game_states[self.current_player].hp <= num {
-                                warn!("当前玩家生命值不足")
-                                //todo
+                            let hp = self.game_states[self.current_player].hp;
+                            if hp <= num {
+                                warn!("当前玩家生命值不足");
+                                if real_point + hp > num {
+                                    info!("使用RealPoint保护生命");
+                                    self.game_states[self.current_player].hp = 1;
+                                    self.game_states[self.current_player].real_point =
+                                        real_point - (num - hp + 1);
+                                } else {
+                                    self.game_states[self.current_player].hp = 0;
+                                    self.game_states[self.current_player].real_point = 0;
+                                    // TODO 抛出获胜事件 终止游戏
+                                    info!(
+                                        "生命+RealPoint不足 {:?} 获胜",
+                                        Targeting::TargetPlayerOpponent
+                                    );
+                                }
+                            } else {
+                                self.game_states[self.current_player].hp -= num;
+                                info!(
+                                    "伤害后的生命值hp[{:?}]",
+                                    self.game_states[self.current_player].hp
+                                );
                             }
                         }
                         if let Targeting::TargetPlayerOpponent = targeting {
-                            let real_point = self.game_states[self.next_player_id()].real_point;
-                            if self.game_states[self.next_player_id()].hp <= num {
-                                warn!("对方玩家生命值不足")
-                                // todo 这里使用不足的补偿极值
+                            let next_id = self.next_player_id();
+                            let real_point = self.game_states[next_id].real_point;
+                            let hp = self.game_states[next_id].hp;
+                            if hp <= num {
+                                warn!("对方玩家生命值不足");
+                                if real_point + hp > num {
+                                    info!("使用RealPoint保护生命");
+                                    self.game_states[next_id].hp = 1;
+                                    self.game_states[next_id].real_point =
+                                        real_point - (num - hp + 1);
+                                } else {
+                                    self.game_states[next_id].hp = 0;
+                                    self.game_states[next_id].real_point = 0;
+                                    // TODO 抛出获胜事件 终止游戏
+                                    info!(
+                                        "生命+RealPoint不足 {:?} 获胜",
+                                        Targeting::TargetPlayerSelf
+                                    );
+                                }
+                            } else {
+                                self.game_states[next_id].hp -= num;
+                                info!("伤害后的生命值hp[{:?}]", self.game_states[next_id].hp);
                             }
                         }
                     }

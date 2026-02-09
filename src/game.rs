@@ -116,6 +116,11 @@ impl Game {
         self.game_states[self.current_player].cost.clone()
     }
 
+    pub fn next_cost(&self) -> Vec<EntryId> {
+        let next_player = self.next_player_id();
+        self.game_states[next_player].cost.clone()
+    }
+
     // 检查 卡片当前费用是否足够
     pub fn check_cost(&self, card_id: EntryId) -> bool {
         // （手牌的个数 ， cost局域剩余） 最小值 + real_point <= cost
@@ -686,6 +691,35 @@ impl Game {
                             card.attack_counter = 0;
                         }
                     }
+                    Action::AskingReuse(limit) => {
+                        // todo 向需要的人询问
+                        let choice_cards = self.read_reuse_choice(targeting.clone(), limit);
+                        self.do_effect_stacks.push_front(DoEffect::Action {
+                            source: Default::default(),
+                            targeting,
+                            action: Action::Reuse(choice_cards),
+                        });
+                    }
+                    Action::Reuse(cost_cards) => {
+                        // 回收卡片进手卡
+                        info!("回收卡片进手卡");
+                        if let Targeting::TargetPlayerSelf = targeting {
+                            // 自己的卡回收
+                            self.game_states[self.current_player]
+                                .cost
+                                .retain(|x| !cost_cards.contains(x));
+                            self.game_states[self.current_player]
+                                .hand
+                                .extend(cost_cards);
+                        } else if let Targeting::TargetPlayerOpponent = targeting {
+                            let next_id = self.next_player_id();
+                            // 对手的卡回收
+                            self.game_states[next_id]
+                                .cost
+                                .retain(|x| !cost_cards.contains(x));
+                            self.game_states[next_id].hand.extend(cost_cards);
+                        }
+                    }
                 },
                 DoEffect::AndAction(actions) => {
                     for action in actions {
@@ -718,7 +752,7 @@ impl Game {
     }
 
     // 对手id
-    fn next_player_id(&self) -> PlayerId {
+    pub fn next_player_id(&self) -> PlayerId {
         (self.current_player + 1) % self.players.len()
     }
 
@@ -777,6 +811,25 @@ impl Game {
         }
     }
 
+    // 获取对手场上费用最高的一张卡的费用
+    fn get_highest_cost_other_zone(&self) -> usize {
+        let next_id = self.next_player_id();
+        let mut all_card_ids = Vec::new();
+        for zone in &self.game_states[next_id].zone {
+            if let Zone::FrontEnd { id, cards } = zone {
+                if let Some(first) = cards.first() {
+                    all_card_ids.push(first.clone());
+                }
+            }
+        }
+
+        all_card_ids
+            .iter()
+            .map(|id| self.get(id.clone()).card_info.cost)
+            .max()
+            .unwrap_or(0)
+    }
+
     // 开始游戏
     pub fn run(&mut self) {
         loop {
@@ -800,7 +853,32 @@ impl Game {
                 }
                 GamePhase::Reuse => {
                     info!("player[{:?}] 回收阶段", self.current_player);
-                    // todo
+                    // 对手场上的最高费用卡
+                    let highest_cost = self.get_highest_cost_other_zone();
+                    let my_cost_len = self.current_cost().len();
+                    info!(
+                        "对手战场上最高Cost:{:?},我的Cost区长度{:?}",
+                        highest_cost, my_cost_len
+                    );
+                    if highest_cost > 0 && my_cost_len > 0 {
+                        if highest_cost >= my_cost_len {
+                            info!("cost 区全部回收");
+                            self.do_effect_stacks.push_front(DoEffect::Action {
+                                source: Default::default(),
+                                targeting: Targeting::TargetPlayerSelf,
+                                action: Action::Reuse(self.current_cost().clone()),
+                            });
+                        } else {
+                            info!("cost 选择回收");
+                            self.do_effect_stacks.push_front(DoEffect::Action {
+                                source: Default::default(),
+                                targeting: Targeting::TargetPlayerSelf,
+                                action: Action::AskingReuse(highest_cost),
+                            });
+                        }
+                    }
+
+                    self.process_effect();
                     self.next_phase();
                 }
                 GamePhase::Main => {

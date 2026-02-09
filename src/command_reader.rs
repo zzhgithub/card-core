@@ -213,6 +213,21 @@ impl ReadPlayerActions for Game {
                     if tokens.is_empty() {
                         continue;
                     }
+                    // 纯支付点数
+                    if tokens.len() == 1 {
+                        let point = tokens[1];
+                        if let Ok(point) = point.parse() {
+                            if point != self.get(card).card_info.clone().cost {
+                                error!("所需的费用不正确");
+                            } else {
+                                return ChoiceRes::Cost {
+                                    hands: Vec::new(),
+                                    real_point: point,
+                                };
+                            }
+                        }
+                    }
+
                     if tokens.len() == 1 && tokens[0] == "cancel" {
                         info!("取消操作");
                         self.set_rollback(card);
@@ -244,6 +259,61 @@ impl ReadPlayerActions for Game {
                 }
             }
         }
+    }
+
+    // 选取要进行回收的卡
+    fn read_reuse_choice(&mut self, targeting: Targeting, limit: usize) -> Vec<EntryId> {
+        let amin_id = if let Targeting::TargetPlayerSelf = targeting {
+            self.current_player()
+        } else {
+            self.next_player_id()
+        };
+        info!("当前选择用户{:?}", amin_id);
+        let costs = if amin_id == self.current_player() {
+            self.current_cost()
+        } else {
+            self.next_cost()
+        };
+        info!("可以选择的数据为{:?}。从中选取{:?}", costs.clone(), limit);
+        info!("[id1,id2]使用逗号隔开");
+        loop {
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+            let tokens: Vec<_> = input.trim().split_whitespace().collect();
+            if tokens.is_empty() {
+                continue;
+            }
+            if tokens.len() == 1 {
+                let hands_str = tokens[0];
+                let hands: Vec<EntryId> = hands_str
+                    .trim()
+                    .split(",")
+                    .map(|x| {
+                        let Ok(r) = x.parse() else { todo!() };
+                        r
+                    })
+                    .filter(|x| {
+                        if !costs.contains(x) {
+                            warn!("{:?} 不在可选列表内", costs)
+                        }
+                        costs.contains(x)
+                    })
+                    .collect();
+                if hands.len() < limit {
+                    if hands.len() == costs.len() {
+                        return hands;
+                    } else {
+                        error!("选择卡数据要进可能的接近要求");
+                    }
+                } else if hands.len() > limit {
+                    error!("选择卡数超过要求");
+                } else {
+                    return hands;
+                }
+            }
+        }
+
+        Vec::new()
     }
 
     fn help_main(&self) {

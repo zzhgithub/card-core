@@ -16,6 +16,7 @@ pub trait ReadPlayerActions {
 
     // 阅读选择指令
     fn read_choice(&mut self, choice: ChoiceReq) -> ChoiceRes;
+    fn read_reuse_choice(&mut self, targeting: Targeting, limit:usize) -> Vec<EntryId>;
 
     fn help_main(&self);
 }

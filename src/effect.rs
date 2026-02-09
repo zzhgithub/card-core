@@ -150,4 +150,8 @@ pub enum Action {
     AttackCounterUp(EntryId, usize),
     // 攻击计数器减少
     AttackCountDown(EntryId, usize),
+    // 询问 回收卡
+    AskingReuse(usize),
+    // 卡片回收
+    Reuse(Vec<EntryId>),
 }

@@ -35,6 +35,8 @@ pub struct Game {
     do_effect_stacks: VecDeque<DoEffect>,
     // 游戏变化
     game_diff_list: Vec<GameDiff>,
+    // 游戏结束
+    game_over: Option<(PlayerId, GameOverReason)>,
 }
 
 impl Game {
@@ -64,6 +66,7 @@ impl Game {
             id_generator,
             do_effect_stacks: VecDeque::new(),
             game_diff_list: Vec::new(),
+            game_over: None,
         }
     }
 
@@ -549,11 +552,19 @@ impl Game {
                     }
                     Action::Draw(num) => match targeting {
                         Targeting::TargetPlayerSelf => {
-                            self.game_states[self.current_player].draw(num);
+                            let deck_out = self.game_states[self.current_player].draw(num);
+                            if deck_out {
+                                self.game_over = Some((self.current_player, GameOverReason::DeckOut));
+                                return;
+                            }
                         }
                         Targeting::TargetPlayerOpponent => {
                             let i = self.next_player_id();
-                            self.game_states[i].draw(num);
+                            let deck_out = self.game_states[i].draw(num);
+                            if deck_out {
+                                self.game_over = Some((i, GameOverReason::DeckOut));
+                                return;
+                            }
                         }
                         _ => {}
                     },
@@ -603,11 +614,8 @@ impl Game {
                                 } else {
                                     self.game_states[self.current_player].hp = 0;
                                     self.game_states[self.current_player].real_point = 0;
-                                    // TODO 抛出获胜事件 终止游戏
-                                    info!(
-                                        "生命+RealPoint不足 {:?} 获胜",
-                                        Targeting::TargetPlayerOpponent
-                                    );
+                                    self.game_over = Some((self.current_player, GameOverReason::HpZero));
+                                    return;
                                 }
                             } else {
                                 self.game_states[self.current_player].hp -= num;
@@ -631,11 +639,8 @@ impl Game {
                                 } else {
                                     self.game_states[next_id].hp = 0;
                                     self.game_states[next_id].real_point = 0;
-                                    // TODO 抛出获胜事件 终止游戏
-                                    info!(
-                                        "生命+RealPoint不足 {:?} 获胜",
-                                        Targeting::TargetPlayerSelf
-                                    );
+                                    self.game_over = Some((next_id, GameOverReason::HpZero));
+                                    return;
                                 }
                             } else {
                                 self.game_states[next_id].hp -= num;
@@ -849,6 +854,7 @@ impl Game {
                         action: Action::Draw(1),
                     });
                     self.process_effect();
+                    if self.game_over.is_some() { break; }
                     self.next_phase();
                 }
                 GamePhase::Reuse => {
@@ -885,17 +891,20 @@ impl Game {
                     info!("player[{:?}] 主要阶段1", self.current_player);
                     self.help_main();
                     self.read_action_main();
+                    if self.game_over.is_some() { break; }
                     self.next_phase();
                 }
                 GamePhase::Fight => {
                     info!("player[{:?}] 战斗阶段", self.current_player);
                     self.read_action_fight();
+                    if self.game_over.is_some() { break; }
                     self.next_phase();
                 }
                 GamePhase::Main2 => {
                     info!("player[{:?}] 主要阶段2", self.current_player);
                     self.help_main();
                     self.read_action_main();
+                    if self.game_over.is_some() { break; }
                     self.next_phase();
                 }
                 GamePhase::End => {
@@ -904,6 +913,19 @@ impl Game {
                     self.current_player = self.next_player_id();
                 }
             }
+        }
+
+        // 输出游戏结果
+        if let Some((loser_id, reason)) = &self.game_over {
+            let winner_id = (*loser_id + 1) % self.players.len();
+            let reason_text = match reason {
+                GameOverReason::DeckOut => "卡组耗尽，无法抽卡",
+                GameOverReason::HpZero => "生命值归零",
+            };
+            info!("========== 游戏结束 ==========");
+            info!("败者: 玩家[{}], 原因: {}", loser_id, reason_text);
+            info!("胜者: 玩家[{}]", winner_id);
+            info!("==============================");
         }
     }
 }
@@ -939,6 +961,15 @@ impl GamePhase {
             GamePhase::End => GamePhase::Start,
         }
     }
+}
+
+/// 游戏结束原因
+#[derive(Clone, Debug)]
+pub enum GameOverReason {
+    /// 卡组没有卡时抽卡
+    DeckOut,
+    /// 生命值小于等于0
+    HpZero,
 }
 
 #[derive(Clone, Debug)]
@@ -983,16 +1014,17 @@ impl GameState {
         self.desk.shuffle(&mut thread_rng());
     }
 
-    // 抽卡
-    pub fn draw(&mut self, num: usize) {
-        if num > self.desk.len() {
-            warn!("卡组剩余卡不能抽完，需要抛出事件")
-        }
+    // 抽卡 返回true表示卡组耗尽
+    pub fn draw(&mut self, num: usize) -> bool {
         for _ in 0..num {
             if let Some(entry_id) = self.desk.pop() {
                 self.hand.push(entry_id);
+            } else {
+                warn!("卡组耗尽，无法抽卡");
+                return true;
             }
         }
+        false
     }
 }
 
@@ -1046,5 +1078,258 @@ impl Zone {
             Zone::FrontEnd { id, cards } => cards.len() > 0,
             Zone::BackEnd { id, cards } => cards.len() > 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::card::CardInfoBuilder;
+    use crate::player::PlayerDesk;
+
+    fn test_lua_api() -> LuaApi {
+        let mut api = LuaApi::new();
+        let card_info = CardInfoBuilder::new("test-card".to_string()).build();
+        api.cards.insert("test-card".to_string(), card_info);
+        api
+    }
+
+    fn test_game(desk_size: usize) -> Game {
+        let desk = PlayerDesk(vec!["test-card".to_string(); desk_size]);
+        let players = vec![
+            Player { id: 0, player_desk: desk.clone() },
+            Player { id: 1, player_desk: desk.clone() },
+        ];
+        let api = test_lua_api();
+        Game::new(players, &api)
+    }
+
+    fn test_card(id_gen: &mut IdGenerator) -> Card {
+        Card {
+            entry_id: id_gen.next(),
+            card_info: CardInfoBuilder::new("test".to_string()).build(),
+            attack_counter: 0,
+            attack_max: 1,
+        }
+    }
+
+    // === GameState::draw 单元测试 ===
+
+    #[test]
+    fn test_draw_success() {
+        let mut id_gen = IdGenerator::new();
+        let cards = vec![test_card(&mut id_gen)];
+        let mut state = GameState::new(0, cards, &mut id_gen);
+        assert!(!state.draw(1));
+        assert_eq!(state.hand.len(), 1);
+        assert_eq!(state.desk.len(), 0);
+    }
+
+    #[test]
+    fn test_draw_empty_deck_returns_true() {
+        let mut id_gen = IdGenerator::new();
+        let mut state = GameState::new(0, vec![], &mut id_gen);
+        assert!(state.draw(1));
+        assert_eq!(state.hand.len(), 0);
+    }
+
+    #[test]
+    fn test_draw_partial_deck_out() {
+        let mut id_gen = IdGenerator::new();
+        let cards = vec![test_card(&mut id_gen)];
+        let mut state = GameState::new(0, cards, &mut id_gen);
+        // 卡组只有1张，抽2张，抽到第2张时耗尽
+        assert!(state.draw(2));
+        assert_eq!(state.hand.len(), 1); // 成功抽到1张
+    }
+
+    // === 卡组耗尽 游戏结束判定 ===
+
+    #[test]
+    fn test_game_over_deck_out_current_player() {
+        let mut game = test_game(10);
+        let current = game.current_player;
+        // 清空当前玩家卡组
+        game.game_states[current].desk.clear();
+        // 推入抽卡效果
+        game.do_effect_stacks.push_front(DoEffect::Action {
+            source: Targeting::None,
+            targeting: Targeting::TargetPlayerSelf,
+            action: Action::Draw(1),
+        });
+        game.process_effect();
+        let (loser, reason) = game.game_over.clone().unwrap();
+        assert_eq!(loser, current);
+        assert!(matches!(reason, GameOverReason::DeckOut));
+    }
+
+    #[test]
+    fn test_game_over_deck_out_opponent() {
+        let mut game = test_game(10);
+        let opponent = game.next_player_id();
+        // 清空对手卡组
+        game.game_states[opponent].desk.clear();
+        // 推入对手抽卡效果
+        game.do_effect_stacks.push_front(DoEffect::Action {
+            source: Targeting::None,
+            targeting: Targeting::TargetPlayerOpponent,
+            action: Action::Draw(1),
+        });
+        game.process_effect();
+        let (loser, reason) = game.game_over.clone().unwrap();
+        assert_eq!(loser, opponent);
+        assert!(matches!(reason, GameOverReason::DeckOut));
+    }
+
+    #[test]
+    fn test_no_game_over_on_successful_draw() {
+        let mut game = test_game(10); // 10张卡，初始抽5张，剩5张
+        game.do_effect_stacks.push_front(DoEffect::Action {
+            source: Targeting::None,
+            targeting: Targeting::TargetPlayerSelf,
+            action: Action::Draw(1),
+        });
+        game.process_effect();
+        assert!(game.game_over.is_none());
+    }
+
+    // === 生命值归零 游戏结束判定 ===
+
+    #[test]
+    fn test_game_over_hp_zero_current_player() {
+        let mut game = test_game(10);
+        let current = game.current_player;
+        game.game_states[current].hp = 3;
+        game.game_states[current].real_point = 0;
+        // 造成5点伤害，hp=3 不够，real_point=0 无法保护
+        game.do_effect_stacks.push_front(DoEffect::Action {
+            source: Targeting::None,
+            targeting: Targeting::TargetPlayerSelf,
+            action: Action::Damage(5),
+        });
+        game.process_effect();
+        let (loser, reason) = game.game_over.clone().unwrap();
+        assert_eq!(loser, current);
+        assert!(matches!(reason, GameOverReason::HpZero));
+        assert_eq!(game.game_states[current].hp, 0);
+    }
+
+    #[test]
+    fn test_game_over_hp_zero_opponent() {
+        let mut game = test_game(10);
+        let opponent = game.next_player_id();
+        game.game_states[opponent].hp = 2;
+        game.game_states[opponent].real_point = 0;
+        game.do_effect_stacks.push_front(DoEffect::Action {
+            source: Targeting::None,
+            targeting: Targeting::TargetPlayerOpponent,
+            action: Action::Damage(5),
+        });
+        game.process_effect();
+        let (loser, reason) = game.game_over.clone().unwrap();
+        assert_eq!(loser, opponent);
+        assert!(matches!(reason, GameOverReason::HpZero));
+        assert_eq!(game.game_states[opponent].hp, 0);
+    }
+
+    #[test]
+    fn test_game_over_hp_exact_zero() {
+        let mut game = test_game(10);
+        let current = game.current_player;
+        game.game_states[current].hp = 3;
+        game.game_states[current].real_point = 0;
+        // 伤害恰好等于hp
+        game.do_effect_stacks.push_front(DoEffect::Action {
+            source: Targeting::None,
+            targeting: Targeting::TargetPlayerSelf,
+            action: Action::Damage(3),
+        });
+        game.process_effect();
+        let (loser, reason) = game.game_over.clone().unwrap();
+        assert_eq!(loser, current);
+        assert!(matches!(reason, GameOverReason::HpZero));
+    }
+
+    // === RealPoint 保护生命 ===
+
+    #[test]
+    fn test_hp_protected_by_real_point() {
+        let mut game = test_game(10);
+        let current = game.current_player;
+        game.game_states[current].hp = 2;
+        game.game_states[current].real_point = 5;
+        // 伤害3，hp(2) < 3，但 real_point(5)+hp(2) = 7 > 3，存活
+        game.do_effect_stacks.push_front(DoEffect::Action {
+            source: Targeting::None,
+            targeting: Targeting::TargetPlayerSelf,
+            action: Action::Damage(3),
+        });
+        game.process_effect();
+        assert!(game.game_over.is_none());
+        assert_eq!(game.game_states[current].hp, 1);
+    }
+
+    #[test]
+    fn test_hp_not_protected_when_real_point_insufficient() {
+        let mut game = test_game(10);
+        let current = game.current_player;
+        game.game_states[current].hp = 2;
+        game.game_states[current].real_point = 1;
+        // 伤害5，hp(2)+real_point(1) = 3 < 5，无法存活
+        game.do_effect_stacks.push_front(DoEffect::Action {
+            source: Targeting::None,
+            targeting: Targeting::TargetPlayerSelf,
+            action: Action::Damage(5),
+        });
+        game.process_effect();
+        let (loser, reason) = game.game_over.clone().unwrap();
+        assert_eq!(loser, current);
+        assert!(matches!(reason, GameOverReason::HpZero));
+        assert_eq!(game.game_states[current].hp, 0);
+        assert_eq!(game.game_states[current].real_point, 0);
+    }
+
+    // === 正常伤害不触发游戏结束 ===
+
+    #[test]
+    fn test_no_game_over_on_survivable_damage() {
+        let mut game = test_game(10);
+        let current = game.current_player;
+        game.game_states[current].hp = 6;
+        game.do_effect_stacks.push_front(DoEffect::Action {
+            source: Targeting::None,
+            targeting: Targeting::TargetPlayerSelf,
+            action: Action::Damage(3),
+        });
+        game.process_effect();
+        assert!(game.game_over.is_none());
+        assert_eq!(game.game_states[current].hp, 3);
+    }
+
+    // === effect队列中断测试 ===
+
+    #[test]
+    fn test_effect_queue_stops_after_game_over() {
+        let mut game = test_game(10);
+        let current = game.current_player;
+        game.game_states[current].hp = 1;
+        game.game_states[current].real_point = 0;
+        // 先推入AddRealPoint，再推入致命Damage
+        // process_effect 从前端取，所以先push Damage再push AddRealPoint
+        // 但我们要测试：Damage导致game_over后，后续effect不再执行
+        game.do_effect_stacks.push_back(DoEffect::Action {
+            source: Targeting::None,
+            targeting: Targeting::TargetPlayerSelf,
+            action: Action::Damage(5),
+        });
+        game.do_effect_stacks.push_back(DoEffect::Action {
+            source: Targeting::None,
+            targeting: Targeting::TargetPlayerSelf,
+            action: Action::AddRealPoint(100),
+        });
+        game.process_effect();
+        assert!(game.game_over.is_some());
+        // AddRealPoint 不应该被执行
+        assert_eq!(game.game_states[current].real_point, 0);
     }
 }

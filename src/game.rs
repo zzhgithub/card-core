@@ -13,8 +13,11 @@ use log::{debug, error, info, trace, warn};
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use std::cmp::PartialEq;
-use std::collections::VecDeque;
-use std::sync::Arc;
+use std::collections::{HashSet, VecDeque};
+
+const MAX_HAND_SIZE: usize = 20;
+const MAX_COST_SIZE: usize = 6;
+const MAX_REAL_POINT: usize = 6;
 
 // 游戏对象
 #[derive(Clone, Debug)]
@@ -37,11 +40,13 @@ pub struct Game {
     game_diff_list: Vec<GameDiff>,
     // 游戏结束
     game_over: Option<(PlayerId, GameOverReason)>,
+    // AI玩家集合
+    ai_players: HashSet<PlayerId>,
 }
 
 impl Game {
     // 创建游戏
-    pub fn new(players: Vec<Player>, lua_api: &LuaApi) -> Self {
+    pub fn new(players: Vec<Player>, lua_api: &LuaApi, ai_players: HashSet<PlayerId>) -> Self {
         let mut id_generator = IdGenerator::new();
         let mut cards_all = Vec::new();
         let mut games_states = Vec::new();
@@ -67,7 +72,12 @@ impl Game {
             do_effect_stacks: VecDeque::new(),
             game_diff_list: Vec::new(),
             game_over: None,
+            ai_players,
         }
+    }
+
+    pub fn is_ai_player(&self, player_id: PlayerId) -> bool {
+        self.ai_players.contains(&player_id)
     }
 
     pub fn get(&self, id: EntryId) -> Card {
@@ -126,12 +136,17 @@ impl Game {
 
     // 检查 卡片当前费用是否足够
     pub fn check_cost(&self, card_id: EntryId) -> bool {
-        // （手牌的个数 ， cost局域剩余） 最小值 + real_point <= cost
-        let can_cost = self.game_states[self.current_player]
-            .hand
-            .len()
-            .min(6 - self.current_cost().len())
-            + self.current_real_point();
+        // Cost区满时只能用RealPoint支付
+        let available_cost_slots = MAX_COST_SIZE.saturating_sub(self.current_cost().len());
+        let can_pay_by_hand = if available_cost_slots > 0 {
+            self.game_states[self.current_player]
+                .hand
+                .len()
+                .min(available_cost_slots)
+        } else {
+            0
+        };
+        let can_cost = can_pay_by_hand + self.current_real_point();
         let card = self.get(card_id);
         can_cost >= card.card_info.cost
     }
@@ -151,14 +166,29 @@ impl Game {
 
     // hands 支付的手牌 real_point 支付的点数
     pub fn cost(&mut self, hands: Vec<EntryId>, real_point: usize) {
-        // 批量移动
-        self.game_states[self.current_player]
-            .hand
-            .retain(|x| !hands.contains(x));
-        self.game_states[self.current_player].cost.extend(hands);
-        // 减少值
+        // Cost区满时不能用手卡支付
+        let available_slots =
+            MAX_COST_SIZE.saturating_sub(self.game_states[self.current_player].cost.len());
+
+        if available_slots == 0 && !hands.is_empty() {
+            warn!("Cost区已满，无法用手卡支付费用");
+            // 将手卡返回
+            for card in hands {
+                self.game_states[self.current_player].hand.push(card);
+            }
+        } else {
+            // 批量移动手卡到Cost区
+            self.game_states[self.current_player]
+                .hand
+                .retain(|x| !hands.contains(x));
+
+            let take_count = hands.len().min(available_slots);
+            for card in hands.into_iter().take(take_count) {
+                self.game_states[self.current_player].cost.push(card);
+            }
+        }
+        // 减少RealPoint
         self.game_states[self.current_player].real_point -= real_point;
-        // TODO 这里抛出一系列事件 给后续自己排连锁
     }
 
     fn check_attack_action(&self, player_action: PlayerAction) -> bool {
@@ -217,7 +247,11 @@ impl Game {
 
                 // 支持不支付费用的登场
                 let choice_res = if card.card_info.cost > 0 {
-                    self.read_choice(ChoiceReq::Cost(card_id))
+                    if self.is_ai_player(self.current_player) {
+                        self.ai_read_choice(ChoiceReq::Cost(card_id))
+                    } else {
+                        self.read_choice(ChoiceReq::Cost(card_id))
+                    }
                 } else {
                     ChoiceRes::Cost {
                         hands: Vec::new(),
@@ -554,7 +588,8 @@ impl Game {
                         Targeting::TargetPlayerSelf => {
                             let deck_out = self.game_states[self.current_player].draw(num);
                             if deck_out {
-                                self.game_over = Some((self.current_player, GameOverReason::DeckOut));
+                                self.game_over =
+                                    Some((self.current_player, GameOverReason::DeckOut));
                                 return;
                             }
                         }
@@ -614,7 +649,8 @@ impl Game {
                                 } else {
                                     self.game_states[self.current_player].hp = 0;
                                     self.game_states[self.current_player].real_point = 0;
-                                    self.game_over = Some((self.current_player, GameOverReason::HpZero));
+                                    self.game_over =
+                                        Some((self.current_player, GameOverReason::HpZero));
                                     return;
                                 }
                             } else {
@@ -650,15 +686,25 @@ impl Game {
                     }
                     Action::AddRealPoint(num) => {
                         if let Targeting::TargetPlayerSelf = targeting {
-                            self.game_states[self.current_player].real_point += num;
-                            // todo 这里的要考虑溢出的情况
-                            info!("当前玩家RealPoint 增加[{:?}]", num);
+                            let current = self.game_states[self.current_player].real_point;
+                            if current >= MAX_REAL_POINT {
+                                warn!("RealPoint已达到上限[{}]，不再增加", MAX_REAL_POINT);
+                            } else {
+                                let new_value = (current + num).min(MAX_REAL_POINT);
+                                self.game_states[self.current_player].real_point = new_value;
+                                info!("当前玩家RealPoint 增加[{:?}]，当前[{:?}]", num, new_value);
+                            }
                         }
                         if let Targeting::TargetPlayerOpponent = targeting {
                             let next_id = self.next_player_id();
-                            self.game_states[next_id].real_point += num;
-                            // todo 这里的要考虑溢出的情况
-                            info!("对方玩家RealPoint 增加[{:?}]", num);
+                            let current = self.game_states[next_id].real_point;
+                            if current >= MAX_REAL_POINT {
+                                warn!("RealPoint已达到上限[{}]，不再增加", MAX_REAL_POINT);
+                            } else {
+                                let new_value = (current + num).min(MAX_REAL_POINT);
+                                self.game_states[next_id].real_point = new_value;
+                                info!("对方玩家RealPoint 增加[{:?}]，当前[{:?}]", num, new_value);
+                            }
                         }
                     }
                     Action::UseRealPoint(num) => {
@@ -854,57 +900,74 @@ impl Game {
                         action: Action::Draw(1),
                     });
                     self.process_effect();
-                    if self.game_over.is_some() { break; }
+                    if self.game_over.is_some() {
+                        break;
+                    }
                     self.next_phase();
                 }
                 GamePhase::Reuse => {
                     info!("player[{:?}] 回收阶段", self.current_player);
-                    // 对手场上的最高费用卡
-                    let highest_cost = self.get_highest_cost_other_zone();
                     let my_cost_len = self.current_cost().len();
-                    info!(
-                        "对手战场上最高Cost:{:?},我的Cost区长度{:?}",
-                        highest_cost, my_cost_len
-                    );
-                    if highest_cost > 0 && my_cost_len > 0 {
-                        if highest_cost >= my_cost_len {
-                            info!("cost 区全部回收");
-                            self.do_effect_stacks.push_front(DoEffect::Action {
-                                source: Default::default(),
-                                targeting: Targeting::TargetPlayerSelf,
-                                action: Action::Reuse(self.current_cost().clone()),
-                            });
+                    info!("Cost区长度: {:?}", my_cost_len);
+                    if my_cost_len > 0 {
+                        let highest_cost = self.get_highest_cost_other_zone();
+                        let reuse_count = if highest_cost > 0 {
+                            highest_cost.min(my_cost_len)
                         } else {
-                            info!("cost 选择回收");
-                            self.do_effect_stacks.push_front(DoEffect::Action {
-                                source: Default::default(),
-                                targeting: Targeting::TargetPlayerSelf,
-                                action: Action::AskingReuse(highest_cost),
-                            });
-                        }
+                            my_cost_len
+                        };
+                        info!("回收 {} 张卡片", reuse_count);
+                        let cost_cards: Vec<EntryId> = self
+                            .current_cost()
+                            .iter()
+                            .take(reuse_count)
+                            .cloned()
+                            .collect();
+                        self.do_effect_stacks.push_front(DoEffect::Action {
+                            source: Default::default(),
+                            targeting: Targeting::TargetPlayerSelf,
+                            action: Action::Reuse(cost_cards),
+                        });
                     }
-
                     self.process_effect();
                     self.next_phase();
                 }
                 GamePhase::Main => {
                     info!("player[{:?}] 主要阶段1", self.current_player);
-                    self.help_main();
-                    self.read_action_main();
-                    if self.game_over.is_some() { break; }
+                    if self.is_ai_player(self.current_player) {
+                        self.ai_read_action_main();
+                    } else {
+                        self.help_main();
+                        self.read_action_main();
+                    }
+                    if self.game_over.is_some() {
+                        break;
+                    }
                     self.next_phase();
                 }
                 GamePhase::Fight => {
                     info!("player[{:?}] 战斗阶段", self.current_player);
-                    self.read_action_fight();
-                    if self.game_over.is_some() { break; }
+                    if self.is_ai_player(self.current_player) {
+                        self.ai_read_action_fight();
+                    } else {
+                        self.read_action_fight();
+                    }
+                    if self.game_over.is_some() {
+                        break;
+                    }
                     self.next_phase();
                 }
                 GamePhase::Main2 => {
                     info!("player[{:?}] 主要阶段2", self.current_player);
-                    self.help_main();
-                    self.read_action_main();
-                    if self.game_over.is_some() { break; }
+                    if self.is_ai_player(self.current_player) {
+                        self.ai_read_action_main();
+                    } else {
+                        self.help_main();
+                        self.read_action_main();
+                    }
+                    if self.game_over.is_some() {
+                        break;
+                    }
                     self.next_phase();
                 }
                 GamePhase::End => {
@@ -1018,7 +1081,12 @@ impl GameState {
     pub fn draw(&mut self, num: usize) -> bool {
         for _ in 0..num {
             if let Some(entry_id) = self.desk.pop() {
-                self.hand.push(entry_id);
+                if self.hand.len() >= MAX_HAND_SIZE {
+                    self.grave.push(entry_id);
+                    warn!("手卡已满[{}]，卡片进入墓地", MAX_HAND_SIZE);
+                } else {
+                    self.hand.push(entry_id);
+                }
             } else {
                 warn!("卡组耗尽，无法抽卡");
                 return true;
@@ -1097,11 +1165,17 @@ mod tests {
     fn test_game(desk_size: usize) -> Game {
         let desk = PlayerDesk(vec!["test-card".to_string(); desk_size]);
         let players = vec![
-            Player { id: 0, player_desk: desk.clone() },
-            Player { id: 1, player_desk: desk.clone() },
+            Player {
+                id: 0,
+                player_desk: desk.clone(),
+            },
+            Player {
+                id: 1,
+                player_desk: desk.clone(),
+            },
         ];
         let api = test_lua_api();
-        Game::new(players, &api)
+        Game::new(players, &api, HashSet::new())
     }
 
     fn test_card(id_gen: &mut IdGenerator) -> Card {

@@ -972,6 +972,43 @@ impl Game {
                 }
                 GamePhase::End => {
                     info!("player[{:?}] 回合结束阶段", self.current_player);
+                    info!("========== 回合结束 ==========");
+                    for (i, state) in self.game_states.iter().enumerate() {
+                        let front_end_count: usize = state
+                            .zone
+                            .iter()
+                            .filter_map(|z| {
+                                if let Zone::FrontEnd { cards, .. } = z {
+                                    Some(cards.len())
+                                } else {
+                                    None
+                                }
+                            })
+                            .sum();
+                        let back_end_count: usize = state
+                            .zone
+                            .iter()
+                            .filter_map(|z| {
+                                if let Zone::BackEnd { cards, .. } = z {
+                                    Some(cards.len())
+                                } else {
+                                    None
+                                }
+                            })
+                            .sum();
+                        info!(
+                            "玩家[{}] HP:{} RealPoint:{} 手卡:{} 前场:{} 后场:{} 卡组:{} 墓地:{}",
+                            i,
+                            state.hp,
+                            state.real_point,
+                            state.hand.len(),
+                            front_end_count,
+                            back_end_count,
+                            state.desk.len(),
+                            state.grave.len()
+                        );
+                    }
+                    info!("==============================");
                     self.next_phase();
                     self.current_player = self.next_player_id();
                 }
